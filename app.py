@@ -6,8 +6,14 @@ from datetime import datetime, timezone
 from flask import Flask, jsonify
 from flask_cors import CORS
 
+
+# ============================================================
+# FLASK
+# ============================================================
+
 app = Flask(__name__)
 CORS(app)
+
 
 # ============================================================
 # CONFIGURACIÓN
@@ -18,19 +24,20 @@ TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
 SYMBOL = "XAU/USD"
 INTERVAL = "1min"
 
-# Número de velas utilizadas para el análisis
+# Velas para el análisis
 OUTPUTSIZE = 200
 
-# Riesgo aproximado basado en ATR
+# Stop Loss basado en ATR
+ATR_PERIOD = 14
 ATR_SL_MULTIPLIER = 1.5
 
-# Relación riesgo/beneficio
+# Take Profit basado en relación Riesgo/Beneficio
 TP1_RR = 1.5
 TP2_RR = 2.5
 
 
 # ============================================================
-# FUNCIONES
+# OBTENER VELAS
 # ============================================================
 
 def obtener_velas():
@@ -53,7 +60,11 @@ def obtener_velas():
         "format": "JSON"
     }
 
-    response = requests.get(url, params=params, timeout=15)
+    response = requests.get(
+        url,
+        params=params,
+        timeout=15
+    )
 
     if response.status_code != 200:
         raise Exception(
@@ -62,17 +73,23 @@ def obtener_velas():
 
     data = response.json()
 
-    if "status" in data and data["status"] == "error":
+    if data.get("status") == "error":
         raise Exception(
-            data.get("message", "Error desconocido de Twelve Data")
+            data.get(
+                "message",
+                "Error desconocido de Twelve Data"
+            )
         )
 
     values = data.get("values")
 
     if not values:
-        raise Exception("No se recibieron velas de XAU/USD.")
+        raise Exception(
+            "No se recibieron velas de XAU/USD."
+        )
 
-    # Twelve Data normalmente entrega de más reciente a más antiguo.
+    # Twelve Data normalmente entrega
+    # desde la vela más reciente hacia atrás.
     values = list(reversed(values))
 
     candles = []
@@ -84,16 +101,22 @@ def obtener_velas():
                 "open": float(candle["open"]),
                 "high": float(candle["high"]),
                 "low": float(candle["low"]),
-                "close": float(candle["close"]),
+                "close": float(candle["close"])
             })
         except Exception:
             continue
 
     if len(candles) < 50:
-        raise Exception("No hay suficientes velas para analizar.")
+        raise Exception(
+            "No hay suficientes velas para analizar."
+        )
 
     return candles
 
+
+# ============================================================
+# EMA
+# ============================================================
 
 def ema(values, period):
     """
@@ -105,7 +128,9 @@ def ema(values, period):
 
     multiplier = 2 / (period + 1)
 
-    ema_value = sum(values[:period]) / period
+    ema_value = sum(
+        values[:period]
+    ) / period
 
     for price in values[period:]:
         ema_value = (
@@ -114,6 +139,10 @@ def ema(values, period):
 
     return ema_value
 
+
+# ============================================================
+# RSI
+# ============================================================
 
 def rsi(values, period=14):
     """
@@ -127,6 +156,7 @@ def rsi(values, period=14):
     losses = []
 
     for i in range(1, len(values)):
+
         change = values[i] - values[i - 1]
 
         if change > 0:
@@ -136,22 +166,47 @@ def rsi(values, period=14):
             gains.append(0)
             losses.append(abs(change))
 
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+    avg_gain = sum(
+        gains[:period]
+    ) / period
+
+    avg_loss = sum(
+        losses[:period]
+    ) / period
 
     for i in range(period, len(gains)):
-        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
-        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
+
+        avg_gain = (
+            (
+                avg_gain * (period - 1)
+            ) + gains[i]
+        ) / period
+
+        avg_loss = (
+            (
+                avg_loss * (period - 1)
+            ) + losses[i]
+        ) / period
 
     if avg_loss == 0:
         return 100
 
     rs = avg_gain / avg_loss
 
-    return 100 - (100 / (1 + rs))
+    return 100 - (
+        100 / (1 + rs)
+    )
 
 
-def bollinger(values, period=20, deviation=2):
+# ============================================================
+# BANDAS DE BOLLINGER
+# ============================================================
+
+def bollinger(
+    values,
+    period=20,
+    deviation=2
+):
     """
     Calcula Bandas de Bollinger.
     """
@@ -164,20 +219,30 @@ def bollinger(values, period=20, deviation=2):
     middle = sum(recent) / period
 
     variance = sum(
-        (x - middle) ** 2 for x in recent
+        (x - middle) ** 2
+        for x in recent
     ) / period
 
     std = math.sqrt(variance)
 
-    upper = middle + deviation * std
-    lower = middle - deviation * std
+    upper = middle + (
+        deviation * std
+    )
+
+    lower = middle - (
+        deviation * std
+    )
 
     return middle, upper, lower
 
 
+# ============================================================
+# ATR
+# ============================================================
+
 def atr(candles, period=14):
     """
-    Calcula ATR.
+    Calcula ATR usando True Range.
     """
 
     if len(candles) < period + 1:
@@ -189,6 +254,7 @@ def atr(candles, period=14):
 
         high = candles[i]["high"]
         low = candles[i]["low"]
+
         previous_close = candles[i - 1]["close"]
 
         tr = max(
@@ -202,34 +268,67 @@ def atr(candles, period=14):
     if len(true_ranges) < period:
         return None
 
-    atr_value = sum(true_ranges[:period]) / period
+    atr_value = sum(
+        true_ranges[:period]
+    ) / period
 
     for tr in true_ranges[period:]:
+
         atr_value = (
-            (atr_value * (period - 1)) + tr
+            (
+                atr_value * (period - 1)
+            ) + tr
         ) / period
 
     return atr_value
 
 
+# ============================================================
+# REDONDEAR
+# ============================================================
+
 def redondear(valor):
-    return round(float(valor), 2)
+
+    if valor is None:
+        return None
+
+    return round(
+        float(valor),
+        2
+    )
 
 
 # ============================================================
-# GENERADOR DE SEÑAL
+# GENERAR SEÑAL
 # ============================================================
 
 def analizar(candles):
 
-    closes = [c["close"] for c in candles]
+    closes = [
+        candle["close"]
+        for candle in candles
+    ]
 
     precio = closes[-1]
 
-    ema9 = ema(closes, 9)
-    ema21 = ema(closes, 21)
+    # --------------------------------------------------------
+    # INDICADORES
+    # --------------------------------------------------------
 
-    rsi_value = rsi(closes, 14)
+    ema9 = ema(
+        closes,
+        9
+    )
+
+    ema21 = ema(
+        closes,
+        21
+    )
+
+    rsi_value = rsi(
+        closes,
+        14
+    )
 
     bb_middle, bb_upper, bb_lower = bollinger(
         closes,
@@ -237,7 +336,10 @@ def analizar(candles):
         2
     )
 
-    atr_value = atr(candles, 14)
+    atr_value = atr(
+        candles,
+        ATR_PERIOD
+    )
 
     if (
         ema9 is None
@@ -247,7 +349,9 @@ def analizar(candles):
         or bb_lower is None
         or atr_value is None
     ):
-        raise Exception("No se pudieron calcular todos los indicadores.")
+        raise Exception(
+            "No se pudieron calcular todos los indicadores."
+        )
 
     # ========================================================
     # SISTEMA DE PUNTOS
@@ -260,188 +364,388 @@ def analizar(candles):
     razones_venta = []
 
     # --------------------------------------------------------
-    # EMA 9 vs EMA 21
+    # 1. EMA 9 VS EMA 21
     # --------------------------------------------------------
 
     if ema9 > ema21:
+
         buy_points += 2
-        razones_compra.append("EMA 9 > EMA 21")
+
+        razones_compra.append(
+            "EMA 9 por encima de EMA 21"
+        )
 
     elif ema9 < ema21:
+
         sell_points += 2
-        razones_venta.append("EMA 9 < EMA 21")
+
+        razones_venta.append(
+            "EMA 9 por debajo de EMA 21"
+        )
 
     # --------------------------------------------------------
-    # PRECIO VS EMA 9
+    # 2. PRECIO VS EMA 9
     # --------------------------------------------------------
 
     if precio > ema9:
+
         buy_points += 1
-        razones_compra.append("Precio sobre EMA 9")
+
+        razones_compra.append(
+            "Precio sobre EMA 9"
+        )
 
     elif precio < ema9:
+
         sell_points += 1
-        razones_venta.append("Precio bajo EMA 9")
+
+        razones_venta.append(
+            "Precio bajo EMA 9"
+        )
 
     # --------------------------------------------------------
-    # RSI
+    # 3. RSI
     # --------------------------------------------------------
 
     if 50 <= rsi_value <= 70:
+
         buy_points += 2
-        razones_compra.append("RSI favorable para compra")
+
+        razones_compra.append(
+            "RSI favorable para compra"
+        )
 
     elif 30 <= rsi_value < 50:
+
         sell_points += 1
-        razones_venta.append("RSI débil")
+
+        razones_venta.append(
+            "RSI muestra debilidad"
+        )
 
     elif rsi_value < 30:
+
         buy_points += 2
-        razones_compra.append("RSI sobreventa")
+
+        razones_compra.append(
+            "RSI en sobreventa"
+        )
 
     elif rsi_value > 70:
+
         sell_points += 2
-        razones_venta.append("RSI sobrecompra")
+
+        razones_venta.append(
+            "RSI en sobrecompra"
+        )
 
     # --------------------------------------------------------
-    # BANDAS DE BOLLINGER
+    # 4. BOLLINGER
     # --------------------------------------------------------
 
     if precio <= bb_lower:
+
         buy_points += 2
-        razones_compra.append("Precio cerca de banda inferior")
+
+        razones_compra.append(
+            "Precio cerca de banda inferior"
+        )
 
     elif precio >= bb_upper:
+
         sell_points += 2
-        razones_venta.append("Precio cerca de banda superior")
+
+        razones_venta.append(
+            "Precio cerca de banda superior"
+        )
 
     # --------------------------------------------------------
-    # DISTANCIA A EMA 21
+    # 5. PRECIO VS EMA 21
     # --------------------------------------------------------
 
     if precio > ema21:
+
         buy_points += 1
+
+        razones_compra.append(
+            "Precio sobre EMA 21"
+        )
+
     else:
+
         sell_points += 1
 
+        razones_venta.append(
+            "Precio bajo EMA 21"
+        )
+
     # ========================================================
-    # DECISIÓN
+    # DIFERENCIA
     # ========================================================
 
-    diferencia = buy_points - sell_points
-
-    total_points = max(
-        buy_points + sell_points,
-        1
+    diferencia = (
+        buy_points - sell_points
     )
 
+    total_points = (
+        buy_points + sell_points
+    )
+
+    # ========================================================
+    # SEÑAL
+    # ========================================================
+
     if diferencia >= 5:
+
         signal = "COMPRA FUERTE 🟢"
         direction = "BUY"
 
     elif diferencia >= 2:
+
         signal = "COMPRA 🟢"
         direction = "BUY"
 
     elif diferencia <= -5:
+
         signal = "VENTA FUERTE 🔴"
         direction = "SELL"
 
     elif diferencia <= -2:
+
         signal = "VENTA 🔴"
         direction = "SELL"
 
     else:
+
         signal = "ESPERAR ⏳"
         direction = "WAIT"
+
+    # ========================================================
+    # TENDENCIA
+    # ========================================================
+
+    if ema9 > ema21:
+
+        trend = "ALCISTA 🟢"
+
+    elif ema9 < ema21:
+
+        trend = "BAJISTA 🔴"
+
+    else:
+
+        trend = "NEUTRAL 🟡"
 
     # ========================================================
     # CONFIANZA
     # ========================================================
 
-    max_possible = 9
+    # Máximo teórico del sistema:
+    # EMA = 2
+    # Precio EMA9 = 1
+    # RSI = 2
+    # Bollinger = 2
+    # EMA21 = 1
+    # Total = 8
+
+    max_possible = 8
 
     if direction == "BUY":
-        confidence = 50 + (diferencia / max_possible) * 50
+
+        confidence = (
+            50
+            + (diferencia / max_possible) * 50
+        )
 
     elif direction == "SELL":
-        confidence = 50 + (abs(diferencia) / max_possible) * 50
+
+        confidence = (
+            50
+            + (abs(diferencia) / max_possible) * 50
+        )
 
     else:
+
         confidence = 50
 
     confidence = max(
         50,
-        min(99, confidence)
+        min(
+            99,
+            confidence
+        )
     )
 
     # ========================================================
     # STOP LOSS / TAKE PROFIT
     # ========================================================
 
-    risk_distance = atr_value * ATR_SL_MULTIPLIER
+    risk_distance = (
+        atr_value * ATR_SL_MULTIPLIER
+    )
 
     if direction == "BUY":
 
-        stop_loss = precio - risk_distance
+        entry_price = precio
 
-        take_profit_1 = precio + (
-            risk_distance * TP1_RR
+        stop_loss = (
+            entry_price - risk_distance
         )
 
-        take_profit_2 = precio + (
-            risk_distance * TP2_RR
+        take_profit_1 = (
+            entry_price
+            + (risk_distance * TP1_RR)
+        )
+
+        take_profit_2 = (
+            entry_price
+            + (risk_distance * TP2_RR)
         )
 
     elif direction == "SELL":
 
-        stop_loss = precio + risk_distance
+        entry_price = precio
 
-        take_profit_1 = precio - (
-            risk_distance * TP1_RR
+        stop_loss = (
+            entry_price + risk_distance
         )
 
-        take_profit_2 = precio - (
-            risk_distance * TP2_RR
+        take_profit_1 = (
+            entry_price
+            - (risk_distance * TP1_RR)
+        )
+
+        take_profit_2 = (
+            entry_price
+            - (risk_distance * TP2_RR)
         )
 
     else:
+
+        entry_price = precio
 
         stop_loss = None
         take_profit_1 = None
         take_profit_2 = None
 
     # ========================================================
+    # RIESGO / BENEFICIO
+    # ========================================================
+
+    risk_reward_tp1 = TP1_RR
+    risk_reward_tp2 = TP2_RR
+
+    # ========================================================
+    # MOMENTO DE LA VELA
+    # ========================================================
+
+    candle_time = candles[-1]["datetime"]
+
+    # ========================================================
     # RESULTADO
     # ========================================================
 
     return {
-        "symbol": "XAU/USD",
-        "timeframe": "1min",
 
-        "price": redondear(precio),
+        # ----------------------------------------------------
+        # IDENTIFICACIÓN
+        # ----------------------------------------------------
+
+        "symbol": SYMBOL,
+
+        "timeframe": INTERVAL,
+
+        "platform": "MetaTrader 5",
+
+        "data_source": "Twelve Data",
+
+        # ----------------------------------------------------
+        # PRECIO
+        # ----------------------------------------------------
+
+        "price": redondear(
+            precio
+        ),
+
+        "entry_price": redondear(
+            entry_price
+        ),
+
+        # ----------------------------------------------------
+        # SEÑAL
+        # ----------------------------------------------------
 
         "signal": signal,
+
         "direction": direction,
 
-        "confidence": redondear(confidence),
+        "trend": trend,
 
-        "ema9": redondear(ema9),
-        "ema21": redondear(ema21),
+        "confidence": redondear(
+            confidence
+        ),
 
-        "rsi": redondear(rsi_value),
+        # ----------------------------------------------------
+        # PUNTOS
+        # ----------------------------------------------------
 
-        "upper_band": redondear(bb_upper),
-        "middle_band": redondear(bb_middle),
-        "lower_band": redondear(bb_lower),
+        "buy_points": buy_points,
 
-        "atr": redondear(atr_value),
+        "sell_points": sell_points,
+
+        "difference": diferencia,
+
+        "total_points": total_points,
+
+        # ----------------------------------------------------
+        # INDICADORES
+        # ----------------------------------------------------
+
+        "ema9": redondear(
+            ema9
+        ),
+
+        "ema21": redondear(
+            ema21
+        ),
+
+        "rsi": redondear(
+            rsi_value
+        ),
+
+        "atr": redondear(
+            atr_value
+        ),
+
+        "upper_band": redondear(
+            bb_upper
+        ),
+
+        "middle_band": redondear(
+            bb_middle
+        ),
+
+        "lower_band": redondear(
+            bb_lower
+        ),
+
+        # ----------------------------------------------------
+        # RIESGO
+        # ----------------------------------------------------
+
+        "risk_distance": redondear(
+            risk_distance
+        ),
 
         "stop_loss": (
             redondear(stop_loss)
             if stop_loss is not None
             else None
         ),
+
+        # ----------------------------------------------------
+        # TAKE PROFITS
+        # ----------------------------------------------------
 
         "take_profit_1": (
             redondear(take_profit_1)
@@ -455,11 +759,23 @@ def analizar(candles):
             else None
         ),
 
-        "buy_points": buy_points,
-        "sell_points": sell_points,
+        "tp1_rr": risk_reward_tp1,
+
+        "tp2_rr": risk_reward_tp2,
+
+        # ----------------------------------------------------
+        # RAZONES
+        # ----------------------------------------------------
 
         "reasons_buy": razones_compra,
+
         "reasons_sell": razones_venta,
+
+        # ----------------------------------------------------
+        # TIEMPO
+        # ----------------------------------------------------
+
+        "candle_time": candle_time,
 
         "time": datetime.now(
             timezone.utc
@@ -468,7 +784,7 @@ def analizar(candles):
 
 
 # ============================================================
-# API
+# RUTA PRINCIPAL
 # ============================================================
 
 @app.route("/", methods=["GET"])
@@ -478,29 +794,50 @@ def home():
 
         candles = obtener_velas()
 
-        resultado = analizar(candles)
+        resultado = analizar(
+            candles
+        )
 
         resultado["api_status"] = "connected"
 
-        return jsonify(resultado)
+        return jsonify(
+            resultado
+        )
 
     except Exception as error:
 
         return jsonify({
+
             "api_status": "error",
-            "symbol": "XAU/USD",
-            "timeframe": "1min",
+
+            "symbol": SYMBOL,
+
+            "timeframe": INTERVAL,
+
             "signal": "ERROR",
+
             "message": str(error)
+
         }), 500
 
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
 
 @app.route("/health", methods=["GET"])
 def health():
 
     return jsonify({
+
         "status": "ok",
-        "service": "XAUUSD Signal API"
+
+        "service": "XAUUSD Signal API",
+
+        "symbol": SYMBOL,
+
+        "timeframe": INTERVAL
+
     })
 
 
@@ -511,10 +848,15 @@ def health():
 if __name__ == "__main__":
 
     port = int(
-        os.environ.get("PORT", 10000)
+        os.environ.get(
+            "PORT",
+            10000
+        )
     )
 
     app.run(
+
         host="0.0.0.0",
+
         port=port
-    )
+            )            
