@@ -1,7 +1,8 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
+import pandas as pd
 import yfinance as yf
-import pandas_ta as ta
+import ta
 
 app = Flask(__name__)
 CORS(app)
@@ -9,26 +10,32 @@ CORS(app)
 @app.route('/', methods=['GET'])
 def get_live_signal():
     try:
-        # Descargar velas en tiempo real de XAUUSD (GC=F / Gold Futures)
+        # Descargar datos de XAUUSD (GC=F)
         df = yf.download(tickers='GC=F', period='1d', interval='1m')
 
         if df.empty or len(df) < 20:
-            return jsonify({"error": "No se pudieron obtener datos del mercado"}), 500
+            return jsonify({"error": "Sin datos suficientes del mercado"}), 500
 
-        # Corregir formato de columnas si yfinance devuelve MultiIndex
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # Calcular Indicadores Técnicos Profesionales
-        df['RSI'] = ta.rsi(df['Close'], length=14)
+        # Cálculo de Indicadores con la librería 'ta'
+        close_series = df['Close'].squeeze()
         
-        bb = ta.bbands(df['Close'], length=20, std=2)
-        df['BBL'] = bb['BBL_20_2.0'] # Banda Inferior
-        df['BBU'] = bb['BBU_20_2.0'] # Banda Superior
+        # RSI (14)
+        rsi_indicator = ta.momentum.RSIIndicator(close=close_series, window=14)
+        df['RSI'] = rsi_indicator.rsi()
 
-        df['EMA_9'] = ta.ema(df['Close'], length=9)
+        # Bollinger Bands (20, 2)
+        bb = ta.volatility.BollingerBands(close=close_series, window=20, window_dev=2)
+        df['BBL'] = bb.bollinger_lband()
+        df['BBU'] = bb.bollinger_hband()
 
-        # Obtener los valores de la última vela cerrada
+        # EMA (9)
+        ema_indicator = ta.trend.EMAIndicator(close=close_series, window=9)
+        df['EMA_9'] = ema_indicator.ema_indicator()
+
+        # Valores de la última vela
         last_row = df.iloc[-1]
         price = round(float(last_row['Close']), 2)
         rsi = round(float(last_row['RSI']), 2)
@@ -36,16 +43,12 @@ def get_live_signal():
         bbu = round(float(last_row['BBU']), 2)
         ema = round(float(last_row['EMA_9']), 2)
 
-        # Lógica de Análisis Profesional
+        # Lógica de señales
         signal = "ESPERAR ⏳"
-        
-        # Condición de COMPRA: Sobrevendido en RSI + Precio por debajo de Banda Inferior de Bollinger
         if rsi < 30 and price <= bbl:
             signal = "COMPRA FUERTE 🚀"
         elif rsi < 40 and price > ema:
             signal = "COMPRA 📈"
-
-        # Condición de VENTA: Sobrecomprado en RSI + Precio por encima de Banda Superior de Bollinger
         elif rsi > 70 and price >= bbu:
             signal = "VENTA FUERTE 🔻"
         elif rsi > 60 and price < ema:
