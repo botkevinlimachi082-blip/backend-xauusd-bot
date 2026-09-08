@@ -3,4 +3,4 @@ flask-cors
 gunicorn
 yfinance
 pandas
-pandas-ta
+ta
